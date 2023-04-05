@@ -393,6 +393,7 @@ func populatePkgCache(imageCacheDir string) error {
 		{"mkdir", "-p", manifestsDir},
 		{"bash", "-c", "cp config/package/hc/*.yaml " + manifestsDir},
 		{"cp", "config/package/hcp/addon-operator.yaml", manifestsDir},
+		{"cp", "config/package/hcp/metrics.service.yaml", manifestsDir},
 		{"cp", "config/package/manifest.yaml", manifestsDir},
 		{"cp", "config/package/addon-operator-package.Containerfile", manifestsDir},
 	} {
@@ -1238,7 +1239,7 @@ func deployFeatureToggles(ctx context.Context, cluster *dev.Cluster) error {
 
 	for _, featTog := range availableFeatureToggles {
 		// feature toggles enabled/disabled at the level of openshift/release in the form of multiple jobs
-		if featTog.IsEnabledOnTestEnv() {
+		if featuretoggle.IsEnabledOnTestEnv(featTog) {
 			if err := featTog.Enable(ctx); err != nil {
 				return fmt.Errorf("failed to enable the feature toggle: %w", err)
 			}
@@ -1256,7 +1257,7 @@ func preClusterCreationFeatureToggleSetup(ctx context.Context) error {
 
 	for _, featTog := range availableFeatureToggles {
 		// feature toggles enabled/disabled at the level of openshift/release in the form of multiple jobs
-		if featTog.IsEnabledOnTestEnv() {
+		if featuretoggle.IsEnabledOnTestEnv(featTog) {
 			if err := featTog.PreClusterCreationSetup(ctx); err != nil {
 				return fmt.Errorf("failed to set the feature toggle before the cluster creation: %w", err)
 			}
@@ -1273,7 +1274,7 @@ func postClusterCreationFeatureToggleSetup(ctx context.Context, cluster *dev.Clu
 
 	for _, featTog := range availableFeatureToggles {
 		// feature toggles enabled/disabled at the level of openshift/release in the form of multiple jobs
-		if featTog.IsEnabledOnTestEnv() {
+		if featuretoggle.IsEnabledOnTestEnv(featTog) {
 			if err := featTog.PostClusterCreationSetup(ctx, cluster); err != nil {
 				return fmt.Errorf("failed to set the feature toggle after the cluster creation: %w", err)
 			}

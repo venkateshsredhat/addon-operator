@@ -3,12 +3,15 @@ package addon
 import (
 	"context"
 	"errors"
+	"github.com/hashicorp/go-multierror"
+	"github.com/openshift/addon-operator/internal/ocm"
+	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"testing"
 
 	addonsv1alpha1 "github.com/openshift/addon-operator/apis/addons/v1alpha1"
 
 	"github.com/go-logr/logr"
-	"github.com/openshift/addon-operator/internal/ocm"
 	"github.com/openshift/addon-operator/internal/ocm/ocmtest"
 	"github.com/openshift/addon-operator/internal/testutil"
 	"github.com/stretchr/testify/mock"
@@ -109,11 +112,15 @@ func TestReconcileErrorHandling(t *testing.T) {
 		t.Log("Say 103")
 		if testCase.externalAPISyncErrPresent {
 
-			ocmClient.On("GetAddOnStatus", mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, errors.New("gateway timeout"))
-			ocmClient.On("PatchAddOnStatus", mock.Anything, mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, errors.New("gateway timeout"))
+			//ocmClient.On("GetAddOnStatus", mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, errors.New("gateway timeout"))
+			//ocmClient.On("PatchAddOnStatus", mock.Anything, mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, errors.New("gateway timeout"))
+			ocmClient.On("PostAddOnStatus", mock.Anything, mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, errors.New("gateway timeout"))
+
 		} else {
-			ocmClient.On("GetAddOnStatus", mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, nil)
-			ocmClient.On("PatchAddOnStatus", mock.Anything, mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, nil)
+			//ocmClient.On("GetAddOnStatus", mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, nil)
+			//ocmClient.On("PatchAddOnStatus", mock.Anything, mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, nil)
+			ocmClient.On("PostAddOnStatus", mock.Anything, mock.Anything, mock.Anything).Return(ocm.AddOnStatusResponse{}, nil)
+
 		}
 		t.Log("Say 111")
 		if testCase.statusUpdateErrPresent {
@@ -129,19 +136,18 @@ func TestReconcileErrorHandling(t *testing.T) {
 		}).Return(nil)
 		t.Log("Say 134")
 
-		// invoke Reconciler
-		//	_, err := r.Reconcile(context.Background(), reconcile.Request{})
-
-		/*		expectedErrorsNum := expectedNumErrors(testCase)
-				if expectedErrorsNum == 0 {
-					t.Log("Say 135")
-					assert.NoError(t, err)
-				} else {
-					multiErr, ok := err.(*multierror.Error) //nolint
-					t.Log("Say 139")
-					assert.True(t, ok, "expected multi error")
-					assert.Equal(t, expectedNumErrors(testCase), multiErr.Len())
-				}*/
+		_, err := r.Reconcile(context.Background(), reconcile.Request{})
+		t.Log("Say 139")
+		expectedErrorsNum := expectedNumErrors(testCase)
+		if expectedErrorsNum == 0 {
+			t.Log("Say 135")
+			assert.NoError(t, err)
+		} else {
+			multiErr, ok := err.(*multierror.Error) //nolint
+			t.Log("Say 139")
+			assert.True(t, ok, "expected multi error")
+			assert.Equal(t, expectedNumErrors(testCase), multiErr.Len())
+		}
 	}
 }
 

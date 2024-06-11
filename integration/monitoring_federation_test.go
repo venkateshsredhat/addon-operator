@@ -212,11 +212,11 @@ func validateMonitoringFederationServiceMonitor(t *testing.T, ctx context.Contex
 	assert.Equal(t, monitoringv1.ServiceMonitorSpec{
 		Endpoints: []monitoringv1.Endpoint{
 			{
-				HonorLabels:     true,
-				BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
-				Port:            "https",
-				Path:            "/federate",
-				Scheme:          "https",
+				Authorization: &monitoringv1.SafeAuthorization{Type: "Bearer", Credentials: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-bearertoken-secret", addon.Name)}, Key: "token"}},
+				HonorLabels:   true,
+				Port:          "https",
+				Path:          "/federate",
+				Scheme:        "https",
 				Params: map[string][]string{
 					"match[]": {
 						`ALERTS{alertstate="firing"}`,

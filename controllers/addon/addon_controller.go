@@ -148,9 +148,10 @@ func NewAddonReconciler(
 			},
 			// Step 6: Reconcile Monitoring Federation
 			&monitoringFederationReconciler{
-				client:   client,
-				scheme:   scheme,
-				recorder: recorder,
+				client:                 client,
+				scheme:                 scheme,
+				recorder:               recorder,
+				addonOperatorNamespace: addonOperatorNamespace,
 			},
 		},
 	}

@@ -25,9 +25,10 @@ import (
 const MONITORING_FEDERATION_RECONCILER_NAME = "monitoringFederationReconciler"
 
 type monitoringFederationReconciler struct {
-	client   client.Client
-	scheme   *runtime.Scheme
-	recorder *metrics.Recorder
+	client                 client.Client
+	scheme                 *runtime.Scheme
+	recorder               *metrics.Recorder
+	addonOperatorNamespace string
 }
 
 func (r *monitoringFederationReconciler) Reconcile(ctx context.Context,
@@ -163,7 +164,7 @@ func (r *monitoringFederationReconciler) actualMonitoringNamespace(
 }
 
 func (r *monitoringFederationReconciler) ensureServiceMonitor(ctx context.Context, addon *addonsv1alpha1.Addon) error {
-	desired, err := r.desiredServiceMonitor(addon)
+	desired, err := r.desiredServiceMonitor(ctx, addon)
 	if err != nil {
 		return err
 	}
@@ -192,14 +193,19 @@ func (r *monitoringFederationReconciler) ensureServiceMonitor(ctx context.Contex
 	return r.client.Update(ctx, actual)
 }
 
-func (r *monitoringFederationReconciler) desiredServiceMonitor(addon *addonsv1alpha1.Addon) (*monitoringv1.ServiceMonitor, error) {
+func (r *monitoringFederationReconciler) desiredServiceMonitor(ctx context.Context, addon *addonsv1alpha1.Addon) (*monitoringv1.ServiceMonitor, error) {
+
+	bearertokensecret, err := r.createBearerTokenSecretForAddon(ctx, addon)
+	if err != nil {
+		return nil, fmt.Errorf("creating bearer token secret in Addon ns: %w", err)
+	}
 	serviceMonitor := &monitoringv1.ServiceMonitor{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      GetMonitoringFederationServiceMonitorName(addon),
 			Namespace: GetMonitoringNamespaceName(addon),
 		},
 		Spec: monitoringv1.ServiceMonitorSpec{
-			Endpoints: GetMonitoringFederationServiceMonitorEndpoints(addon),
+			Endpoints: GetMonitoringFederationServiceMonitorEndpoints(addon, bearertokensecret),
 			NamespaceSelector: monitoringv1.NamespaceSelector{
 				MatchNames: []string{addon.Spec.Monitoring.Federation.Namespace},
 			},
@@ -216,6 +222,39 @@ func (r *monitoringFederationReconciler) desiredServiceMonitor(addon *addonsv1al
 	}
 
 	return serviceMonitor, nil
+}
+
+func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx context.Context, addon *addonsv1alpha1.Addon) (*corev1.Secret, error) {
+	key := client.ObjectKey{
+		Name:      "addon-operator-prom-token",
+		Namespace: r.addonOperatorNamespace,
+	}
+	addonOperatorPromTokenSecret := &corev1.Secret{}
+	err := r.client.Get(ctx, key, addonOperatorPromTokenSecret)
+	if err != nil {
+		return nil, fmt.Errorf("The AddonOperator namespace does not have the secret: %w", err)
+	}
+
+	// Make a copy of this Token Secret in Addon namespace
+	bearertokensecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
+			Namespace: fmt.Sprintf("%s", addon.Namespace),
+		},
+		Data: addonOperatorPromTokenSecret.Data,
+	}
+	//Add the relevant lables and annotations for the New Secret in Addon Namespace
+	controllers.AddCommonLabels(bearertokensecret, addon)
+	controllers.AddCommonAnnotations(bearertokensecret, addon)
+	if err := controllerutil.SetControllerReference(addon, bearertokensecret, r.scheme); err != nil {
+		return nil, fmt.Errorf("setting owner reference: %w", err)
+	}
+
+	if err := r.client.Create(ctx, bearertokensecret); err != nil {
+		return nil, fmt.Errorf("creating secret: %w", err)
+	}
+
+	return bearertokensecret, nil
 }
 
 func (r *monitoringFederationReconciler) actualServiceMonitor(
@@ -257,6 +296,13 @@ func (r *monitoringFederationReconciler) ensureDeletionOfUnwantedMonitoringFeder
 
 		if err := client.IgnoreNotFound(r.client.Delete(ctx, serviceMonitor)); err != nil {
 			return fmt.Errorf("could not remove monitoring federation ServiceMonitor: %w", err)
+		}
+		if err := client.IgnoreNotFound(r.client.Delete(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
+				Namespace: fmt.Sprintf("%s", addon.Namespace),
+			}})); err != nil {
+			return fmt.Errorf("could not remove monitoring federation ServiceMonitor Secret for the Addon : %w", err)
 		}
 	}
 

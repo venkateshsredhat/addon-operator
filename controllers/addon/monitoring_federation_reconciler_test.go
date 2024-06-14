@@ -26,9 +26,8 @@ func TestEnsureMonitoringFederation_MonitoringFullyMissingInSpec_NotPresentInClu
 	addon := testutil.NewTestAddonWithoutNamespace()
 
 	r := &monitoringFederationReconciler{
-		client:                 c,
-		scheme:                 testutil.NewTestSchemeWithAddonsv1alpha1(),
-		addonOperatorNamespace: "openshift-addon-operator",
+		client: c,
+		scheme: testutil.NewTestSchemeWithAddonsv1alpha1(),
 	}
 
 	ctx := context.Background()
@@ -40,9 +39,8 @@ func TestEnsureMonitoringFederation_MonitoringFullyMissingInSpec_NotPresentInClu
 func TestEnsureMonitoringFederation_MonitoringPresentInSpec_NotPresentInCluster(t *testing.T) {
 	c := testutil.NewClient()
 	r := &monitoringFederationReconciler{
-		client:                 c,
-		scheme:                 testutil.NewTestSchemeWithAddonsv1alpha1(),
-		addonOperatorNamespace: "openshift-addon-operator",
+		client: c,
+		scheme: testutil.NewTestSchemeWithAddonsv1alpha1(),
 	}
 
 	addon := testutil.NewTestAddonWithMonitoringFederation()

@@ -25,10 +25,9 @@ import (
 const MONITORING_FEDERATION_RECONCILER_NAME = "monitoringFederationReconciler"
 
 type monitoringFederationReconciler struct {
-	client                 client.Client
-	scheme                 *runtime.Scheme
-	recorder               *metrics.Recorder
-	addonOperatorNamespace string
+	client   client.Client
+	scheme   *runtime.Scheme
+	recorder *metrics.Recorder
 }
 
 func (r *monitoringFederationReconciler) Reconcile(ctx context.Context,
@@ -227,10 +226,11 @@ func (r *monitoringFederationReconciler) desiredServiceMonitor(ctx context.Conte
 func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx context.Context, addon *addonsv1alpha1.Addon) (*corev1.Secret, error) {
 	key := client.ObjectKey{
 		Name:      "addon-operator-prom-token",
-		Namespace: r.addonOperatorNamespace,
+		Namespace: "openshift-addon-operator",
 	}
-	addonOperatorPromTokenSecret := &corev1.Secret{}
-	err := r.client.Get(ctx, key, addonOperatorPromTokenSecret)
+	fmt.Printf("finding token secret openshift-addon-operator")
+	addonOperatorPromTokenSecret := corev1.Secret{}
+	err := r.client.Get(ctx, key, &addonOperatorPromTokenSecret)
 	if err != nil {
 		return nil, fmt.Errorf("The AddonOperator namespace does not have the secret: %w", err)
 	}
@@ -239,7 +239,7 @@ func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx con
 	bearertokensecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
-			Namespace: fmt.Sprintf("%s", addon.Namespace),
+			Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon)),
 		},
 		Data: addonOperatorPromTokenSecret.Data,
 	}

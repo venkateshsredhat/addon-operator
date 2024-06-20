@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -26,7 +28,6 @@ const MONITORING_FEDERATION_RECONCILER_NAME = "monitoringFederationReconciler"
 
 type monitoringFederationReconciler struct {
 	client, uncachedClient client.Client
-	readerClient           client.Reader
 	scheme                 *runtime.Scheme
 	recorder               *metrics.Recorder
 }
@@ -35,7 +36,7 @@ func (r *monitoringFederationReconciler) Reconcile(ctx context.Context,
 	addon *addonsv1alpha1.Addon) (ctrl.Result, error) {
 	log := controllers.LoggerFromContext(ctx)
 	reconErr := metrics.NewReconcileError("addon", r.recorder, true)
-
+	log.Info(fmt.Sprint("in monitoringFederationReconciler"))
 	// Possibly ensure monitoring federation
 	// Normally this would be configured before the addon workload is installed
 	// but currently the addon workload creates the monitoring stack by itself
@@ -83,9 +84,12 @@ func (r *monitoringFederationReconciler) ensureMonitoringFederation(ctx context.
 	} else if !result.IsZero() {
 		return result, nil
 	}
-
-	if err := r.ensureServiceMonitor(ctx, addon); err != nil {
+	sresult, serr := r.reconcileServiceMonitor(ctx, addon)
+	if serr != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring ServiceMonitor: %w", err)
+	}
+	if !sresult.IsZero() {
+		return sresult, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -163,17 +167,25 @@ func (r *monitoringFederationReconciler) actualMonitoringNamespace(
 	return namespace, nil
 }
 
-func (r *monitoringFederationReconciler) ensureServiceMonitor(ctx context.Context, addon *addonsv1alpha1.Addon) error {
-	desired, err := r.desiredServiceMonitor(ctx, addon)
+func (r *monitoringFederationReconciler) reconcileServiceMonitor(ctx context.Context, addon *addonsv1alpha1.Addon) (ctrl.Result, error) {
+	bearerTokenReconcileRes, tokenSecret, err := r.reconcileBearerTokenSecretForAddon(ctx, addon)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
+	}
+	if !bearerTokenReconcileRes.IsZero() {
+		return bearerTokenReconcileRes, nil
+	}
+
+	desired, err := r.desiredServiceMonitor(addon, tokenSecret)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	actual, err := r.actualServiceMonitor(ctx, addon)
 	if k8sApiErrors.IsNotFound(err) {
-		return r.client.Create(ctx, desired)
+		return ctrl.Result{}, r.client.Create(ctx, desired)
 	} else if err != nil {
-		return fmt.Errorf("getting ServiceMonitor: %w", err)
+		return ctrl.Result{}, fmt.Errorf("getting ServiceMonitor: %w", err)
 	}
 
 	currentLabels := labels.Set(actual.Labels)
@@ -183,29 +195,24 @@ func (r *monitoringFederationReconciler) ensureServiceMonitor(ctx context.Contex
 	labelsChanged := !labels.Equals(currentLabels, newLabels)
 
 	if ownedByAddon && !specChanged && !labelsChanged {
-		return nil
+		return ctrl.Result{}, nil
 	}
 
 	actual.Spec = desired.Spec
 	actual.Labels = newLabels
 	actual.OwnerReferences = desired.OwnerReferences
 
-	return r.client.Update(ctx, actual)
+	return ctrl.Result{}, r.client.Update(ctx, actual)
 }
 
-func (r *monitoringFederationReconciler) desiredServiceMonitor(ctx context.Context, addon *addonsv1alpha1.Addon) (*monitoringv1.ServiceMonitor, error) {
-
-	bearertokensecret, err := r.createBearerTokenSecretForAddon(ctx, addon)
-	if err != nil {
-		return nil, fmt.Errorf("creating bearer token secret in Addon ns: %w", err)
-	}
+func (r *monitoringFederationReconciler) desiredServiceMonitor(addon *addonsv1alpha1.Addon, bearerTokenSecret *corev1.Secret) (*monitoringv1.ServiceMonitor, error) {
 	serviceMonitor := &monitoringv1.ServiceMonitor{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      GetMonitoringFederationServiceMonitorName(addon),
 			Namespace: GetMonitoringNamespaceName(addon),
 		},
 		Spec: monitoringv1.ServiceMonitorSpec{
-			Endpoints: GetMonitoringFederationServiceMonitorEndpoints(addon, bearertokensecret),
+			Endpoints: GetMonitoringFederationServiceMonitorEndpoints(addon, bearerTokenSecret),
 			NamespaceSelector: monitoringv1.NamespaceSelector{
 				MatchNames: []string{addon.Spec.Monitoring.Federation.Namespace},
 			},
@@ -224,8 +231,8 @@ func (r *monitoringFederationReconciler) desiredServiceMonitor(ctx context.Conte
 	return serviceMonitor, nil
 }
 
-func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx context.Context, addon *addonsv1alpha1.Addon) (*corev1.Secret, error) {
-	key := client.ObjectKey{
+func (r *monitoringFederationReconciler) reconcileBearerTokenSecretForAddon(ctx context.Context, addon *addonsv1alpha1.Addon) (ctrl.Result, *corev1.Secret, error) {
+	key := types.NamespacedName{
 		Name:      "addon-operator-prom-token",
 		Namespace: "openshift-addon-operator",
 	}
@@ -233,82 +240,51 @@ func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx con
 	//client.ObjectKey{}
 	log := controllers.LoggerFromContext(ctx)
 	log.Info("finding token secret openshift-addon-operator")
-	addonOperatorPromTokenSecret := corev1.Secret{}
+	addonOperatorPromTokenSecret := &corev1.Secret{}
 	// check if ADO ns has the SA token required for the SM
-	if err := r.uncachedClient.Get(ctx, key, &addonOperatorPromTokenSecret); err != nil {
-		return nil, fmt.Errorf("The AddonOperator namespace does not have the secret: %w", err)
+	if err := r.uncachedClient.Get(ctx, key, addonOperatorPromTokenSecret); err != nil {
+		return ctrl.Result{}, nil, fmt.Errorf("addonOperator namespace does not have the prom token secret: %w", err)
 	}
-	/*	bearertokensecret2 := &corev1.Secret{}
-			// Make a copy of this Token Secret in Addon namespace if not Present
-			bearertokensecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
-					Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon)),
-				},
-				Data: addonOperatorPromTokenSecret.Data,
-			}
-		if err := r.uncachedClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-bearertoken-secret", addon.Name), Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon))}, bearertokensecret2); err != nil {
-			log.Info("Creating the Secret as its not found ")
-			log.Error(err, "Error creating -251")
-			//Add the relevant lables and annotations for the New -251 in Addon Namespace
-			controllers.AddCommonLabels(bearertokensecret, addon)
-			controllers.AddCommonAnnotations(bearertokensecret, addon)
-			if err := controllerutil.SetControllerReference(addon, bearertokensecret, r.scheme); err != nil {
-				return nil, fmt.Errorf("setting owner reference: %w", err)
-			}
 
-			if err := r.client.Create(ctx, bearertokensecret); err != nil {
-				return nil, fmt.Errorf("creating secret: %w", err)
-			}
-
-		}*/
-
-	bearertokensecret2 := &corev1.Secret{}
-
-	bearertokensecret := &corev1.Secret{
+	desiredBearertokensecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
-			Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon)),
+			Namespace: GetMonitoringNamespaceName(addon),
 		},
 		Data: addonOperatorPromTokenSecret.Data,
 	}
-	controllers.AddCommonLabels(bearertokensecret, addon)
-	controllers.AddCommonAnnotations(bearertokensecret, addon)
-	if err := controllerutil.SetControllerReference(addon, bearertokensecret, r.scheme); err != nil {
-		return nil, fmt.Errorf("setting owner reference: %w", err)
+
+	if err := controllerutil.SetControllerReference(addon, desiredBearertokensecret, r.scheme); err != nil {
+		return ctrl.Result{}, nil, fmt.Errorf("setting owner reference: %w", err)
 	}
 
-	err := r.readerClient.Get(ctx, client.ObjectKey{
-		Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
-		Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon)),
-	}, bearertokensecret2)
-	if err != nil {
-		log.Error(err, "Raw Error")
+	existingBearerTokenSecret := &corev1.Secret{}
+	if err := r.uncachedClient.Get(
+		ctx,
+		types.NamespacedName{Name: desiredBearertokensecret.Name, Namespace: desiredBearertokensecret.Namespace},
+		existingBearerTokenSecret,
+	); err != nil {
 		if k8sApiErrors.IsNotFound(err) {
-			log.Info("Creating the Secret as its not found -288")
-			err := r.client.Create(ctx, bearertokensecret)
-			if err != nil {
-				return nil, err
-			}
-			return bearertokensecret, nil
+			log.Info("Creating the Secret as its not found")
+			return ctrl.Result{RequeueAfter: time.Second * 10}, nil, r.client.Create(ctx, desiredBearertokensecret)
 		}
-		return nil, err
+		return ctrl.Result{}, nil, err
 	}
 
-	ownedByAddon := controllers.HasSameController(bearertokensecret2, bearertokensecret)
-	specChanged := !equality.Semantic.DeepEqual(bearertokensecret.Data, bearertokensecret2.Data)
-	currentLabels := labels.Set(bearertokensecret2.Labels)
-	newLabels := labels.Merge(currentLabels, labels.Set(bearertokensecret.Labels))
+	ownedByAddon := controllers.HasSameController(desiredBearertokensecret, existingBearerTokenSecret)
+	specChanged := !equality.Semantic.DeepEqual(existingBearerTokenSecret.Data, desiredBearertokensecret.Data)
+	currentLabels := labels.Set(existingBearerTokenSecret.Labels)
+	newLabels := labels.Merge(currentLabels, labels.Set(desiredBearertokensecret.Labels))
 	if specChanged || !ownedByAddon || !labels.Equals(newLabels, currentLabels) {
-		bearertokensecret2.Data = bearertokensecret.Data
-		bearertokensecret2.OwnerReferences = bearertokensecret.OwnerReferences
-		bearertokensecret2.Labels = newLabels
-		log.Info("Updating the Secret-304")
-
-		return bearertokensecret2, r.client.Update(ctx, bearertokensecret2)
+		existingBearerTokenSecret.Data = desiredBearertokensecret.Data
+		existingBearerTokenSecret.OwnerReferences = desiredBearertokensecret.OwnerReferences
+		existingBearerTokenSecret.Labels = newLabels
+		log.Info("Updating the desired secret")
+		return ctrl.Result{RequeueAfter: time.Second * 10}, nil, r.client.Update(ctx, existingBearerTokenSecret)
 	}
+	
 	log.Info("Already present Secret")
-	return bearertokensecret2, nil
+	return ctrl.Result{}, existingBearerTokenSecret, nil
 }
 
 func (r *monitoringFederationReconciler) actualServiceMonitor(

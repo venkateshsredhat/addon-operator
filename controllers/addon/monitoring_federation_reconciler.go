@@ -25,9 +25,10 @@ import (
 const MONITORING_FEDERATION_RECONCILER_NAME = "monitoringFederationReconciler"
 
 type monitoringFederationReconciler struct {
-	client   client.Client
-	scheme   *runtime.Scheme
-	recorder *metrics.Recorder
+	client, uncachedClient client.Client
+	readerClient           client.Reader
+	scheme                 *runtime.Scheme
+	recorder               *metrics.Recorder
 }
 
 func (r *monitoringFederationReconciler) Reconcile(ctx context.Context,
@@ -228,14 +229,42 @@ func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx con
 		Name:      "addon-operator-prom-token",
 		Namespace: "openshift-addon-operator",
 	}
-	fmt.Printf("finding token secret openshift-addon-operator")
+
+	//client.ObjectKey{}
+	log := controllers.LoggerFromContext(ctx)
+	log.Info("finding token secret openshift-addon-operator")
 	addonOperatorPromTokenSecret := corev1.Secret{}
-	err := r.client.Get(ctx, key, &addonOperatorPromTokenSecret)
-	if err != nil {
+	// check if ADO ns has the SA token required for the SM
+	if err := r.uncachedClient.Get(ctx, key, &addonOperatorPromTokenSecret); err != nil {
 		return nil, fmt.Errorf("The AddonOperator namespace does not have the secret: %w", err)
 	}
+	/*	bearertokensecret2 := &corev1.Secret{}
+			// Make a copy of this Token Secret in Addon namespace if not Present
+			bearertokensecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
+					Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon)),
+				},
+				Data: addonOperatorPromTokenSecret.Data,
+			}
+		if err := r.uncachedClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-bearertoken-secret", addon.Name), Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon))}, bearertokensecret2); err != nil {
+			log.Info("Creating the Secret as its not found ")
+			log.Error(err, "Error creating -251")
+			//Add the relevant lables and annotations for the New -251 in Addon Namespace
+			controllers.AddCommonLabels(bearertokensecret, addon)
+			controllers.AddCommonAnnotations(bearertokensecret, addon)
+			if err := controllerutil.SetControllerReference(addon, bearertokensecret, r.scheme); err != nil {
+				return nil, fmt.Errorf("setting owner reference: %w", err)
+			}
 
-	// Make a copy of this Token Secret in Addon namespace
+			if err := r.client.Create(ctx, bearertokensecret); err != nil {
+				return nil, fmt.Errorf("creating secret: %w", err)
+			}
+
+		}*/
+
+	bearertokensecret2 := &corev1.Secret{}
+
 	bearertokensecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
@@ -243,18 +272,43 @@ func (r *monitoringFederationReconciler) createBearerTokenSecretForAddon(ctx con
 		},
 		Data: addonOperatorPromTokenSecret.Data,
 	}
-	//Add the relevant lables and annotations for the New Secret in Addon Namespace
 	controllers.AddCommonLabels(bearertokensecret, addon)
 	controllers.AddCommonAnnotations(bearertokensecret, addon)
 	if err := controllerutil.SetControllerReference(addon, bearertokensecret, r.scheme); err != nil {
 		return nil, fmt.Errorf("setting owner reference: %w", err)
 	}
 
-	if err := r.client.Create(ctx, bearertokensecret); err != nil {
-		return nil, fmt.Errorf("creating secret: %w", err)
+	err := r.readerClient.Get(ctx, client.ObjectKey{
+		Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
+		Namespace: fmt.Sprintf("%s", GetMonitoringNamespaceName(addon)),
+	}, bearertokensecret2)
+	if err != nil {
+		log.Error(err, "Raw Error")
+		if k8sApiErrors.IsNotFound(err) {
+			log.Info("Creating the Secret as its not found -288")
+			err := r.client.Create(ctx, bearertokensecret)
+			if err != nil {
+				return nil, err
+			}
+			return bearertokensecret, nil
+		}
+		return nil, err
 	}
 
-	return bearertokensecret, nil
+	ownedByAddon := controllers.HasSameController(bearertokensecret2, bearertokensecret)
+	specChanged := !equality.Semantic.DeepEqual(bearertokensecret.Data, bearertokensecret2.Data)
+	currentLabels := labels.Set(bearertokensecret2.Labels)
+	newLabels := labels.Merge(currentLabels, labels.Set(bearertokensecret.Labels))
+	if specChanged || !ownedByAddon || !labels.Equals(newLabels, currentLabels) {
+		bearertokensecret2.Data = bearertokensecret.Data
+		bearertokensecret2.OwnerReferences = bearertokensecret.OwnerReferences
+		bearertokensecret2.Labels = newLabels
+		log.Info("Updating the Secret-304")
+
+		return bearertokensecret2, r.client.Update(ctx, bearertokensecret2)
+	}
+	log.Info("Already present Secret")
+	return bearertokensecret2, nil
 }
 
 func (r *monitoringFederationReconciler) actualServiceMonitor(
@@ -297,13 +351,15 @@ func (r *monitoringFederationReconciler) ensureDeletionOfUnwantedMonitoringFeder
 		if err := client.IgnoreNotFound(r.client.Delete(ctx, serviceMonitor)); err != nil {
 			return fmt.Errorf("could not remove monitoring federation ServiceMonitor: %w", err)
 		}
-		if err := client.IgnoreNotFound(r.client.Delete(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
-				Namespace: fmt.Sprintf("%s", addon.Namespace),
-			}})); err != nil {
-			return fmt.Errorf("could not remove monitoring federation ServiceMonitor Secret for the Addon : %w", err)
-		}
+		/*
+			if err := client.IgnoreNotFound(r.client.Delete(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
+					Namespace: fmt.Sprintf("%s", addon.Namespace),
+				}})); err != nil {
+				return fmt.Errorf("could not remove monitoring federation ServiceMonitor Secret for the Addon : %w", err)
+			}
+		*/
 	}
 
 	if wantedServiceMonitorName == "" {

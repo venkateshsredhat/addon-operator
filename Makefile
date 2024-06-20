@@ -1,4 +1,4 @@
-FIPS_ENABLED=true
+FIPS_ENABLED=false
 
 include boilerplate/generated-includes.mk
 

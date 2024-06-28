@@ -331,9 +331,9 @@ func (r *monitoringFederationReconciler) ensureDeletionOfUnwantedMonitoringFeder
 		if err := client.IgnoreNotFound(r.client.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
-				Namespace: fmt.Sprintf("%s", addon.Namespace),
+				Namespace: GetMonitoringNamespaceName(addon),
 			}})); err != nil {
-			return fmt.Errorf("could not remove monitoring federation ServiceMonitor Secret for the Addon : %w", err)
+			return fmt.Errorf("could not remove monitoring federation ServiceMonitor Secret in the SM ns for the Addon : %w", err)
 		}
 
 	}

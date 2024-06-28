@@ -88,6 +88,16 @@ func (s *integrationTestSuite) TestMonitoringFederation_MonitoringInPlaceAtCreat
 		s.Assert().NoError(err, "could not get monitoring Namespace %s", monitoringNamespaceName)
 	}
 
+	currentSecretBearerToken := &corev1.Secret{}
+	{
+		err := integration.Client.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-bearertoken-secret", addon.Name),
+			Namespace: monitoringNamespaceName,
+		}, currentSecretBearerToken)
+		s.Assert().NoError(err, "could not get Secret in monitoring  %s", monitoringNamespaceName)
+
+	}
+
 	// validate ServiceMonitor
 	validateMonitoringFederationServiceMonitor(s.T(), ctx, addon, monitoringNamespaceName)
 
@@ -95,6 +105,12 @@ func (s *integrationTestSuite) TestMonitoringFederation_MonitoringInPlaceAtCreat
 	addon.Spec.Monitoring.Federation = nil
 	{
 		err := integration.Client.Update(ctx, addon)
+		s.Require().NoError(err)
+	}
+
+	// wait until Secret in monitoring Namespace is gone (ServiceMonitor will be gone as well)
+	{
+		err := integration.WaitToBeGone(ctx, s.T(), time.Minute, currentSecretBearerToken)
 		s.Require().NoError(err)
 	}
 
@@ -107,6 +123,7 @@ func (s *integrationTestSuite) TestMonitoringFederation_MonitoringInPlaceAtCreat
 		err := integration.WaitToBeGone(ctx, s.T(), time.Minute, currentMonitoringNamespace)
 		s.Require().NoError(err)
 	}
+
 }
 
 func (s *integrationTestSuite) TestMonitoringFederation_MonitoringNotInPlaceAtCreationAddedAfterwards() {

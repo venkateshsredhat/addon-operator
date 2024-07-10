@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -264,9 +263,11 @@ func (r *monitoringFederationReconciler) reconcileBearerTokenSecretForAddon(ctx 
 		types.NamespacedName{Name: desiredBearertokensecret.Name, Namespace: desiredBearertokensecret.Namespace},
 		existingBearerTokenSecret,
 	); err != nil {
+		fmt.Print("reached with error  get call", err)
 		if k8sApiErrors.IsNotFound(err) {
+			fmt.Print("Creating the Secret as its not found")
 			log.Info("Creating the Secret as its not found")
-			return ctrl.Result{RequeueAfter: time.Second * 10}, nil, r.client.Create(ctx, desiredBearertokensecret)
+			return ctrl.Result{RequeueAfter: defaultRetryAfterTime}, nil, r.client.Create(ctx, desiredBearertokensecret)
 		}
 		return ctrl.Result{}, nil, err
 	}
@@ -280,9 +281,8 @@ func (r *monitoringFederationReconciler) reconcileBearerTokenSecretForAddon(ctx 
 		existingBearerTokenSecret.OwnerReferences = desiredBearertokensecret.OwnerReferences
 		existingBearerTokenSecret.Labels = newLabels
 		log.Info("Updating the desired secret")
-		return ctrl.Result{RequeueAfter: time.Second * 10}, nil, r.client.Update(ctx, existingBearerTokenSecret)
+		return ctrl.Result{RequeueAfter: defaultRetryAfterTime}, nil, r.client.Update(ctx, existingBearerTokenSecret)
 	}
-
 	log.Info("Already present Secret")
 	return ctrl.Result{}, existingBearerTokenSecret, nil
 }

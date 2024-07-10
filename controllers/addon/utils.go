@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
@@ -522,7 +521,6 @@ func GetMonitoringFederationServiceMonitorEndpoints(addon *addonsv1alpha1.Addon,
 	}
 	auth := &monitoringv1.SafeAuthorization{Type: "Bearer", Credentials: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: bearertokensecret.Name}, Key: "token"}}
 
-	log.Println("the Auth struct ", auth)
 	return []monitoringv1.Endpoint{{
 		Authorization: auth,
 		HonorLabels:   true,
